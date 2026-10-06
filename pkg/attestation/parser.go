@@ -9,12 +9,19 @@ import (
 )
 
 func ParseWitnessFile(path string, typeFilter []string) ([]TypedAttestation, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read witness file: %w", err)
+		return nil, fmt.Errorf("failed to open witness file: %w", err)
+	}
+	defer file.Close()
+
+	var topLevel map[string]json.RawMessage
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&topLevel); err != nil {
+		return nil, fmt.Errorf("failed to decode attestation JSON: %w", err)
 	}
 
-	return ParseWitnessData(data, typeFilter)
+	return parseWitnessTopLevel(topLevel, typeFilter)
 }
 
 func ParseWitnessData(data []byte, typeFilter []string) ([]TypedAttestation, error) {
@@ -22,14 +29,23 @@ func ParseWitnessData(data []byte, typeFilter []string) ([]TypedAttestation, err
 	if err := json.Unmarshal(data, &topLevel); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal attestation JSON: %w", err)
 	}
+	return parseWitnessTopLevel(topLevel, typeFilter)
+}
 
+func parseWitnessTopLevel(topLevel map[string]json.RawMessage, typeFilter []string) ([]TypedAttestation, error) {
 	// Some witness outputs are direct in-toto statements (not DSSE envelopes).
-	if _, hasPredicate := topLevel["predicate"]; hasPredicate {
-		var statement InTotoStatement
-		if err := json.Unmarshal(data, &statement); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal in-toto statement: %w", err)
+	if predicateData, hasPredicate := topLevel["predicate"]; hasPredicate {
+		// Need to re-marshal to unmarshal properly or just parse directly.
+		// Since we have the whole topLevel, we can unmarshal the entire thing back to InTotoStatement
+		// or just extract predicate.
+		// Actually, we can unmarshal from topLevel["predicate"] directly but InTotoStatement has predicate at top level.
+
+		// To avoid re-marshaling, let's just extract the predicate directly from the map.
+		var predicate map[string]interface{}
+		if err := json.Unmarshal(predicateData, &predicate); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal in-toto predicate: %w", err)
 		}
-		return extractAttestations(statement.Predicate, typeFilter)
+		return extractAttestations(predicate, typeFilter)
 	}
 
 	var rawEnvelope struct {
@@ -37,8 +53,16 @@ func ParseWitnessData(data []byte, typeFilter []string) ([]TypedAttestation, err
 		Payload     json.RawMessage `json:"payload"`
 		Signatures  []Signature     `json:"signatures"`
 	}
-	if err := json.Unmarshal(data, &rawEnvelope); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal DSSE envelope: %w", err)
+
+	// Reconstruct the envelope from topLevel for unmarshaling
+	if payloadType, ok := topLevel["payloadType"]; ok {
+		json.Unmarshal(payloadType, &rawEnvelope.PayloadType)
+	}
+	if payload, ok := topLevel["payload"]; ok {
+		rawEnvelope.Payload = payload
+	}
+	if signatures, ok := topLevel["signatures"]; ok {
+		json.Unmarshal(signatures, &rawEnvelope.Signatures)
 	}
 
 	if len(rawEnvelope.Payload) == 0 {

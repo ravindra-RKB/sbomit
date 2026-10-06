@@ -7,7 +7,7 @@ import (
 
 func TestMaterialExtractor(t *testing.T) {
 	extractor := NewMaterialExtractor()
-	
+
 	if extractor.Name() != "material" {
 		t.Errorf("Expected Name 'material', got %s", extractor.Name())
 	}
